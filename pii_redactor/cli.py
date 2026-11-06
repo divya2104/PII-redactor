@@ -16,6 +16,18 @@ from .pdf_redactor import redact_pdf
 SUPPORTED = {".pdf", ".docx"}
 
 
+def load_dotenv(path: Path = Path(".env")) -> None:
+    """Minimal .env loader (KEY=VALUE lines); existing env vars win."""
+    for candidate in (path, Path(__file__).resolve().parent.parent / ".env"):
+        if candidate.is_file():
+            for line in candidate.read_text(encoding="utf-8-sig").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+            return
+
+
 def _iter_inputs(paths):
     for p in map(Path, paths):
         if p.is_dir():
@@ -36,9 +48,13 @@ def build_parser() -> argparse.ArgumentParser:
         description="Redact PII from PDF/DOCX using a local Azure AI Language PII container.")
     ap.add_argument("inputs", nargs="+", help="files or folders (.pdf, .docx)")
     ap.add_argument("-o", "--output", default="redacted", help="output folder")
-    ap.add_argument("--endpoint", default=os.getenv("PII_ENDPOINT", "http://localhost:5000"))
-    ap.add_argument("--api-key", default=os.getenv("PII_API_KEY"),
-                    help="only needed if the container sits behind a key-checking gateway")
+    ap.add_argument("--cloud", action="store_true",
+                    help="no container: call the Azure Language cloud API directly using "
+                         "AZURE_LANGUAGE_ENDPOINT / AZURE_LANGUAGE_KEY (text is sent to Azure)")
+    ap.add_argument("--endpoint", default=None,
+                    help="default: PII_ENDPOINT or http://localhost:5000 (cloud: AZURE_LANGUAGE_ENDPOINT)")
+    ap.add_argument("--api-key", default=None,
+                    help="default: PII_API_KEY (cloud: AZURE_LANGUAGE_KEY)")
     ap.add_argument("--api-version", default=os.getenv("PII_API_VERSION", "2022-05-01"))
     ap.add_argument("--language", default="en")
     ap.add_argument("--domain", choices=["none", "phi"], default="none",
@@ -59,9 +75,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    load_dotenv()
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(levelname)s %(message)s")
+    if args.cloud:
+        args.endpoint = args.endpoint or os.getenv("AZURE_LANGUAGE_ENDPOINT")
+        args.api_key = args.api_key or os.getenv("AZURE_LANGUAGE_KEY")
+        args.allow_remote = True
+        if not args.endpoint or not args.api_key or "<" in args.endpoint + args.api_key:
+            logging.error("--cloud needs AZURE_LANGUAGE_ENDPOINT and AZURE_LANGUAGE_KEY in .env")
+            return 2
+        logging.warning("CLOUD MODE: document text is sent to %s for analysis", args.endpoint)
+    else:
+        args.endpoint = args.endpoint or os.getenv("PII_ENDPOINT", "http://localhost:5000")
+        args.api_key = args.api_key or os.getenv("PII_API_KEY")
     split = lambda s: {x.strip() for x in s.split(",") if x.strip()}
     try:
         client = LanguagePiiClient(
@@ -71,9 +99,11 @@ def main(argv=None) -> int:
             allow_remote=args.allow_remote)
     except OfflineViolation as exc:
         logging.error(str(exc)); return 2
-    if not client.health():
-        logging.error("PII container not reachable/ready at %s (try: docker compose up -d)",
-                      args.endpoint)
+    ok, msg = client.health()
+    if not ok:
+        hint = ("check AZURE_LANGUAGE_ENDPOINT / AZURE_LANGUAGE_KEY in .env" if client.remote
+                else "start the container (docker compose up -d) or use --cloud")
+        logging.error("PII service not reachable at %s: %s (%s)", args.endpoint, msg, hint)
         return 2
 
     detector = PiiDetector(client, DetectorOptions(

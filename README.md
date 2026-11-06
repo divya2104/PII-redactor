@@ -11,6 +11,28 @@ text is sent only to `localhost` (or your private network). It never goes to the
          *.redacted.pdf / *.redacted.docx  +  *.report.json
 ```
 
+## Quick start without Docker (cloud mode)
+
+If you can't run Docker, the tool can call the Azure Language **cloud** API directly.
+**This is not offline: document text is sent to your Azure Language resource**
+(processed in your chosen region and not stored by the PII service).
+
+1. In the Azure Portal, create a **Language service** resource (Standard S tier), then copy
+   *Endpoint* and *KEY 1* from **Keys and Endpoint**.
+2. Put them in `.env` in the project folder:
+   ```ini
+   AZURE_LANGUAGE_ENDPOINT=https://<your-resource>.cognitiveservices.azure.com/
+   AZURE_LANGUAGE_KEY=<KEY 1>
+   ```
+3. Install and run:
+   ```bash
+   pip install -r requirements.txt
+   python -m pii_redactor.cli my_docs -o redacted --cloud
+   ```
+
+Every other option works the same. Behind a corporate proxy, set `HTTPS_PROXY` and the
+tool will use it in cloud mode. In container mode it never uses a proxy.
+
 ## What "offline" means here
 
 | Container mode | Document text leaves the machine? | Internet needed? | Requirement |

@@ -98,3 +98,19 @@ def test_chunking_respects_limit():
     chunks = list(chunk_text(text))
     assert all(len(c) <= 5000 for _, c in chunks)
     assert "".join(c for _, c in chunks) == text
+
+
+def test_cloud_mode_uses_env(tmp_path, monkeypatch):
+    # Simulates --cloud with endpoint/key from .env (mock server stands in for Azure)
+    monkeypatch.setenv("AZURE_LANGUAGE_ENDPOINT", f"http://127.0.0.1:{PORT}/")
+    monkeypatch.setenv("AZURE_LANGUAGE_KEY", "dummy-key")
+    src = tmp_path / "c.docx"; make_docx(src)
+    assert main([str(src), "-o", str(OUT), "--cloud"]) == 0
+    assert "[Person]" in docx.Document(OUT / "c.redacted.docx").paragraphs[0].text
+
+
+def test_cloud_mode_requires_credentials(monkeypatch):
+    monkeypatch.delenv("AZURE_LANGUAGE_ENDPOINT", raising=False)
+    monkeypatch.delenv("AZURE_LANGUAGE_KEY", raising=False)
+    monkeypatch.setattr("pii_redactor.cli.load_dotenv", lambda: None)  # ignore a real .env
+    assert main(["x.pdf", "--cloud"]) == 2

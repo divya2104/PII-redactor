@@ -52,16 +52,18 @@ def _host_is_local(host: str) -> bool:
     return True
 
 
-def ensure_offline_endpoint(endpoint: str, allow_remote: bool = False) -> None:
+def ensure_offline_endpoint(endpoint: str, allow_remote: bool = False) -> bool:
+    """Returns True if the endpoint is remote (allowed only with allow_remote)."""
     host = urlparse(endpoint).hostname or ""
-    if allow_remote:
-        return
-    if not _host_is_local(host):
+    if _host_is_local(host):
+        return False
+    if not allow_remote:
         raise OfflineViolation(
             f"Endpoint '{endpoint}' is not a local/private address. This tool is meant "
             "to run against the on-prem Azure Language PII container so that document "
             "text never leaves your network. Pass --allow-remote to override."
         )
+    return True
 
 
 class LanguagePiiClient:
@@ -80,7 +82,7 @@ class LanguagePiiClient:
         max_retries: int = 5,
         allow_remote: bool = False,
     ) -> None:
-        ensure_offline_endpoint(endpoint, allow_remote)
+        self.remote = ensure_offline_endpoint(endpoint, allow_remote)
         self.url = endpoint.rstrip("/") + "/language/:analyze-text"
         self.api_version = api_version
         self.language = language
@@ -90,7 +92,8 @@ class LanguagePiiClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self.session = requests.Session()
-        self.session.trust_env = False  # never route document text through a proxy
+        # Local container: never route text through a proxy. Cloud: honour corporate proxies.
+        self.session.trust_env = self.remote
         self.session.headers["Content-Type"] = "application/json"
         if api_key:
             self.session.headers["Ocp-Apim-Subscription-Key"] = api_key
@@ -127,12 +130,17 @@ class LanguagePiiClient:
             return r.json()
         raise RuntimeError("unreachable")
 
-    def health(self) -> bool:
-        base = self.url.rsplit("/language", 1)[0]
+    def health(self) -> tuple:
+        """(ok, message). Container: GET /ready. Cloud: a one-word test request."""
         try:
-            return self.session.get(base + "/ready", timeout=5).ok
-        except requests.RequestException:
-            return False
+            if not self.remote:
+                base = self.url.rsplit("/language", 1)[0]
+                r = self.session.get(base + "/ready", timeout=5)
+                return r.ok, f"/ready returned {r.status_code}"
+            self._post([{"id": "0", "language": self.language, "text": "hello"}])
+            return True, "ok"
+        except (requests.RequestException, RuntimeError) as exc:
+            return False, str(exc)[:300]
 
     # -- public --------------------------------------------------------------
     def recognize(self, texts: Sequence[str]) -> List[List[Entity]]:
