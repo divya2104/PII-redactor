@@ -1,0 +1,58 @@
+# Azure AI Language - PII detection container.
+#
+# Two ways to run it:
+#
+#  1) CONNECTED (default profile "connected")
+#     Document text is processed locally inside the container; the container only
+#     sends *billing/usage metering* to Azure. Needs outbound HTTPS to Azure.
+#
+#  2) DISCONNECTED (profile "disconnected") - fully air-gapped.
+#     Requires Microsoft approval for disconnected containers + a commitment-tier
+#     "Disconnected" Language resource. Step 1 downloads a license file once while
+#     online; afterwards the container runs with no network at all.
+#
+#  Fill in ../.env (copy from ../.env.example) first.
+
+services:
+  pii:
+    profiles: ["connected"]
+    image: mcr.microsoft.com/azure-cognitive-services/textanalytics/pii:latest
+    ports: ["127.0.0.1:5000:5000"]     # bind to loopback only
+    environment:
+      Eula: accept
+      Billing: ${AZURE_LANGUAGE_ENDPOINT}
+      ApiKey: ${AZURE_LANGUAGE_KEY}
+    deploy:
+      resources:
+        limits: { cpus: "4", memory: 8g }   # docs recommend >= 4 cores / 8 GB
+    restart: unless-stopped
+
+  # --- Disconnected: one-time license download (run while online) -------------
+  pii-license:
+    profiles: ["license"]
+    image: mcr.microsoft.com/azure-cognitive-services/textanalytics/pii:latest
+    environment:
+      Eula: accept
+      Billing: ${AZURE_LANGUAGE_ENDPOINT}
+      ApiKey: ${AZURE_LANGUAGE_KEY}
+      DownloadLicense: "True"
+      Mounts__License: /license
+    volumes: ["./license:/license"]
+
+  # --- Disconnected: air-gapped runtime ------------------------------------------
+  pii-offline:
+    profiles: ["disconnected"]
+    image: mcr.microsoft.com/azure-cognitive-services/textanalytics/pii:latest
+    ports: ["127.0.0.1:5000:5000"]
+    network_mode: bridge
+    environment:
+      Eula: accept
+      Mounts__License: /license
+      Mounts__Output: /logs          # usage records, upload to Azure periodically
+    volumes:
+      - ./license:/license:ro
+      - ./logs:/logs
+    deploy:
+      resources:
+        limits: { cpus: "4", memory: 8g }
+    restart: unless-stopped

@@ -1,0 +1,8 @@
+.env
+container/license/
+container/logs/
+redacted/
+__pycache__/
+*.egg-info/
+tests/_out/
+*.zip
